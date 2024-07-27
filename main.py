@@ -3,10 +3,6 @@ import cv2
 import pangolin
 import OpenGL.GL as gl
 
-
-
-
-
 class Frame(object):
     def __init__(self):
         self.img =None
@@ -151,10 +147,6 @@ if __name__ == "__main__":
 
 
     test = Frame()
-    
-
-
-
     # Visualization with Pangolin
     h, w = 1024, 1024
     kUiWidth = 180  # Width of the UI panel
@@ -186,22 +178,14 @@ if __name__ == "__main__":
     checkboxGrid = pangolin.VarBool('ui.Grid', value=True, toggle=True)
     checkboxPause = pangolin.VarBool('ui.Pause', value=False, toggle=True)
     int_slider = pangolin.VarInt('ui.Point Size', value=2, min=1, max=10)
-
-    
     img_idx = 0
     while True:
-
-
-
-
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glClearColor(1.0, 1.0, 1.0, 1.0)
         dcam.Activate(scam)
 
         if checkboxGrid.Get():
             drawPlane()
-
-
 
         retavl, img = cap.read()
         
@@ -227,10 +211,6 @@ if __name__ == "__main__":
 
                     
         pangolin.FinishFrame()
-            
-        # for p in curr_kpts:
-        #     cv2.circle(img, (int(p[0]), int(p[1])), 1, (0, 0, 255), 5)
 
-        # cv2.imshow("visualization for the keypoints extractions :", img)
         if cv2.waitKey(1) == "q":
             break
