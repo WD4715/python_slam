@@ -1,5 +1,6 @@
 import numpy as np
 import cv2
+import g2o
 import pangolin
 import OpenGL.GL as gl
 
@@ -24,7 +25,6 @@ class Frame(object):
         self.descriptors = []
         self.imgs = []
         self.orb_features = []
-        self.keypoints_3d = []
         
         self.K = np.array([[7.188560000000e+02, 0.000000000000e+00, 6.071928000000e+02], 
                            [0.000000000000e+00, 7.188560000000e+02, 1.852157000000e+02], 
@@ -34,6 +34,13 @@ class Frame(object):
 
         # 3d Keypoints
         self.keypoints_3d = []
+        self.drawing_keypoints = []
+        self.optim_keypoints_2d = []
+        self.optim_keypoints_3d = []
+
+
+
+        
         
 
     def vo(self, img):
@@ -106,17 +113,22 @@ class Frame(object):
         pts4d /= pts4d[:, 3:]
         
         keypoints_ = []
-        for i, (p, cp, pp) in enumerate(zip(pts4d, current_kpts_np, good_prev_kps)):
+        keypoints_2d = []
+        for i, (p, cp, pp, npp) in enumerate(zip(pts4d, current_kpts_np, good_prev_kps, normalized_prev_kpts)):
             pl1 = np.dot(previous_pose, p)
             pl2 = np.dot(current_pose, p)            
             if pl1[2] < 0 or pl2[2] < 0:
                 continue    
             
             keypoints_.append(p)
-        
+
+            # keypoints_2d.append(npp)
+            keypoints_2d.append(cp)
+            # keypoints_2d.append(pp)
+            
         
         keypoints_np = np.array(keypoints_)
-        
+        keypoints_2d_np = np.array(keypoints_2d)
         
         ########################################################################################################
         ########################################################################################################
@@ -139,9 +151,6 @@ class Frame(object):
             T[:3, 3]=t    
         self.poses.append(T)
 
-
-
-
 ######################################################################3
         current_status = self.poses[-1]
         current_status = current_status[:-1, :]
@@ -149,9 +158,14 @@ class Frame(object):
         
         check = np.dot(current_status, keypoints_np.T)
         check = check.T
-        check = check[:, :-1]
-        self.keypoints_3d.append(check)
+        # check = check[:, :-1]
+        self.drawing_keypoints.append(check)
 
+
+
+        # if len(keypoints_2d_np) != 3000:
+        self.optim_keypoints_2d.append(keypoints_2d_np)
+        self.optim_keypoints_3d.append(keypoints_np[:, :-1])
 
 
 
@@ -251,6 +265,33 @@ if __name__ == "__main__":
     checkboxPause = pangolin.VarBool('ui.Pause', value=False, toggle=True)
     int_slider = pangolin.VarInt('ui.Point Size', value=2, min=1, max=10)
     img_idx = 0
+
+
+
+
+
+    # Backend Process
+    # create g2o optimizer
+    opt = g2o.SparseOptimizer()
+    solver = g2o.BlockSolverSE3(g2o.LinearSolverCSparseSE3())
+    solver = g2o.OptimizationAlgorithmLevenberg(solver)
+    opt.set_algorithm(solver)
+
+    # add normalized camera
+    cam = g2o.CameraParameters(1.0, (0.0, 0.0), 0)         
+    cam.set_id(0)                       
+    opt.add_parameter(cam)   
+
+    robust_kernel = g2o.RobustKernelHuber(np.sqrt(5.991))
+
+
+
+
+    graph_idx = 0
+    se3_list = [] 
+    pose_graph_index=[]
+    points_graph_index=[]
+
     while True:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glClearColor(1.0, 1.0, 1.0, 1.0)
@@ -263,32 +304,96 @@ if __name__ == "__main__":
         
         test.vo(img)
         pose_list = test.poses
-        points_list = test.keypoints_3d        
-
-
+        points_list = test.drawing_keypoints   
         
-        if len(pose_list) >0:
-            poses_array = np.stack(pose_list, axis=0)  # Stack all poses to create a 3D array
+        
+        
+        popints_3d_list = test.optim_keypoints_3d
+        points_2d_list = test.optim_keypoints_2d
+        if len(points_2d_list) > 1:
+            points_2d = points_2d_list[-1]
 
+        # TODO : Graph Optimization Code
+        for pose in pose_list:
+            se3 = g2o.SE3Quat(pose[0:3, 0:3], pose[0:3, 3])
+            v_se3 = g2o.VertexSE3Expmap()
+            v_se3.set_estimate(se3)
+            v_se3.set_id(graph_idx)
+            pose_graph_index.append(graph_idx)
+
+            if pose_graph_index == 0:
+                v_se3.set_fixed(pose_graph_index)
+            graph_idx += 1
+            opt.add_vertex(v_se3)
+            est = v_se3.estimate()
+            se3_list.append(v_se3)
+            
+
+        # for (points, points2d) in zip(popints_3d_list, points_2d_list):
+        for (points, points2d) in zip(points_list, points_2d_list):
+            for (point, point2d) in zip(points, points2d):
+                pt = g2o.VertexSBAPointXYZ()
+                pt.set_id(graph_idx)
+                graph_idx += 1
+                pt.set_estimate(point)
+                pt.set_marginalized(True)
+                opt.add_vertex(pt)
+
+                # if len(se3_list) > 1:
+                for i in range(len(se3_list)):
+                    edge = g2o.EdgeProjectXYZ2UV()
+                    edge.set_parameter_id(0, 0)
+                    edge.set_vertex(0, pt)
+                    edge.set_vertex(1, se3_list[i])
+                    edge.set_measurement(point2d)
+                    edge.set_information(np.eye(2))
+                    edge.set_robust_kernel(robust_kernel)
+                    opt.add_edge(edge)
+
+        if (img_idx+1) % 10 == 0: 
+            opt.set_verbose(True)
+            opt.initialize_optimization()
+            opt.optimize(1)
+            
+
+        optimized_poses = []
+        for v_se3 in se3_list:
+            se3 = v_se3.estimate()
+            pose = np.eye(4)
+            pose[0:3, 0:3] = se3.rotation().matrix()
+            pose[0:3, 3] = se3.translation()
+            # print(pose)
+            optimized_poses.append(pose)
+
+        # Retrieve optimized 3D points
+        optimized_points = []
+        for v in opt.vertices().values():
+            if isinstance(v, g2o.VertexSBAPointXYZ):
+                optimized_points.append(v.estimate())
+
+
+        if len(optimized_poses) >0:
+            optimized_poses_array = np.stack(optimized_poses, axis=0)  # Stack all poses to create a 3D array
+            # print(optimized_poses_array)
             if checkboxCams.Get():
 
                 if len(pose_list) > 2:
                     gl.glColor3f(0.0, 1.0, 0.0)
-                    pangolin.DrawCameras(poses_array[:-1])
+                    pangolin.DrawCameras(optimized_poses_array[:-1])
                 if len(pose_list) >= 1:
                     gl.glColor3f(1.0, 0.0, 0.0)
-                    pangolin.DrawCameras(poses_array[-1:])
+                    pangolin.DrawCameras(optimized_poses_array[-1:])
 
-
-                if len(points_list) > 1:
-
-                    print("Check for the keyframe or not")
+                if len(optimized_points) > 1:                    
+                    current_points = np.array(optimized_points)
                     
-                    current_points = points_list[-1]
+                    # gl.glPointSize(2)
+                    # gl.glColor3f(0.0, 0.0, 0.0)
+                    # pangolin.DrawPoints(current_points)
+                    
                     gl.glPointSize(2)
                     gl.glColor3f(1.0, 0.0, 0.0)
                     pangolin.DrawPoints(current_points)
-                    
                 
 
         pangolin.FinishFrame()
