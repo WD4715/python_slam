@@ -3,6 +3,7 @@ import cv2
 import pangolin
 import OpenGL.GL as gl
 
+
 class Frame(object):
     def __init__(self):
         self.img =None
@@ -30,6 +31,9 @@ class Frame(object):
                            [0.000000000000e+00, 0.000000000000e+00, 1.000000000000e+00]])
         # CameraPose 
         self.poses = []
+
+        # 3d Keypoints
+        self.keypoints_3d = []
         
 
     def vo(self, img):
@@ -44,10 +48,12 @@ class Frame(object):
             if len(key_element) < 1000:
                 self.keypoints_2d.pop()
                 keypoints = self.keyframe_features()
-            
+                self.keyframe = False
+                
             # Non-KeyFrame
             else:
                 keypoints = self.feature_tracking()
+                self.keyframe = True
         # return self.keypoints_2d
 
     def keyframe_features(self):
@@ -78,6 +84,44 @@ class Frame(object):
         t = t.reshape(3, )
         current_kpts_np = current_kpts_np[mask.ravel() == 1]
         good_prev_kps = good_prev_kps[mask.ravel() == 1]
+
+
+
+
+
+        ########################################################################################################
+        ########################################################################################################
+        ########################################################################################################
+        previous_pose = np.eye(4)
+        previous_pose = previous_pose[:-1, :]
+        current_pose = np.hstack([R, t.reshape(3, 1)])
+
+        # OpenCV Triangulation
+        pts4d = cv2.triangulatePoints(previous_pose, current_pose, normalized_curr_kpts.T, normalized_prev_kpts.T).T
+        # pts4d = cv2.triangulatePoints(previous_pose, current_pose, current_kpts_np.T, good_prev_kps.T).T
+        # pts4d /= pts4d[:, 3:]
+        # kpts_3d = pts4d[:, :-1]
+        
+
+        pts4d /= pts4d[:, 3:]
+        
+        keypoints_ = []
+        for i, (p, cp, pp) in enumerate(zip(pts4d, current_kpts_np, good_prev_kps)):
+            pl1 = np.dot(previous_pose, p)
+            pl2 = np.dot(current_pose, p)            
+            if pl1[2] < 0 or pl2[2] < 0:
+                continue    
+            
+            keypoints_.append(p)
+        
+        
+        keypoints_np = np.array(keypoints_)
+        
+        
+        ########################################################################################################
+        ########################################################################################################
+        ########################################################################################################
+
         
         T = np.eye(4)
         if len(self.poses) < 1:
@@ -94,7 +138,23 @@ class Frame(object):
             T[:3, :3]=R
             T[:3, 3]=t    
         self.poses.append(T)
+
+
+
+
+######################################################################3
+        current_status = self.poses[-1]
+        current_status = current_status[:-1, :]
+
         
+        check = np.dot(current_status, keypoints_np.T)
+        check = check.T
+        check = check[:, :-1]
+        self.keypoints_3d.append(check)
+
+
+
+
         # Visualization For The Feature Tracking
         for prev_p, cur_p in zip(good_prev_kps, current_kpts_np):
             cv2.circle(cur_frame, (int(prev_p[0]), int(prev_p[1])), 1, (255, 0, 0), 1)
@@ -102,8 +162,8 @@ class Frame(object):
         cv2.imshow("Visualization for the tracking : ", cur_frame)
         # current_kpts_np = np.expand_dims(current_kpts_np, axis =1)
         self.keypoints_2d.append(current_kpts_np)
-        
-        # self.keypoints_2d.append(curr_kpts_after_match_np)
+
+
         return None
 
     def normalize_points(self, keypoints, K):
@@ -121,7 +181,19 @@ class Frame(object):
         # Convert back from homogeneous coordinates
         normalized_points = normalized_points[:2] / normalized_points[2]
         return normalized_points.T
-
+    
+    def triangulate(self, pose1, pose2, pts1, pts2):
+        ret = np.zeros((pts1.shape[0], 4))
+        
+        for i, p in enumerate(zip(pts1, pts2)):
+            A = np.zeros((4,4))
+            A[0] = p[0][0] * pose1[2] - pose1[0]
+            A[1] = p[0][1] * pose1[2] - pose1[1]
+            A[2] = p[1][0] * pose2[2] - pose2[0]
+            A[3] = p[1][1] * pose2[2] - pose2[1]
+            _, _, vt = np.linalg.svd(A)
+            ret[i] = vt[3]
+        return ret
 
 def drawPlane(num_divs=200, div_size=10):
     # Plane parallel to x-z at origin with normal -y
@@ -193,12 +265,11 @@ if __name__ == "__main__":
         pose_list = test.poses
         points_list = test.keypoints_3d        
 
+
         
         if len(pose_list) >0:
             poses_array = np.stack(pose_list, axis=0)  # Stack all poses to create a 3D array
 
-            print("Current Camera Pose : \n", pose_list[-1])
-            
             if checkboxCams.Get():
 
                 if len(pose_list) > 2:
@@ -207,9 +278,19 @@ if __name__ == "__main__":
                 if len(pose_list) >= 1:
                     gl.glColor3f(1.0, 0.0, 0.0)
                     pangolin.DrawCameras(poses_array[-1:])
-        
 
+
+                if len(points_list) > 1:
+
+                    print("Check for the keyframe or not")
                     
+                    current_points = points_list[-1]
+                    gl.glPointSize(2)
+                    gl.glColor3f(1.0, 0.0, 0.0)
+                    pangolin.DrawPoints(current_points)
+                    
+                
+
         pangolin.FinishFrame()
 
         if cv2.waitKey(1) == "q":
